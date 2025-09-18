@@ -1,0 +1,99 @@
+name: CI - Build and Test
+
+# Trigger events for the workflow
+on:
+  # CI: Run on pull requests targeting main branch
+  pull_request:
+    branches: [ main ]
+  
+  # CI: Run on pushes to main branch
+  push:
+    branches: [ main ]
+
+  # Allow manual workflow dispatch for testing
+  workflow_dispatch:
+
+# Grant workflow the minimal permissions needed
+permissions:
+  contents: read
+
+env:
+  DOTNET_VERSION: '9.0.x'
+  PROJECT_PATH: './src/PromptSpec.csproj'
+  SOLUTION_PATH: './src/PromptSpec.sln'
+  TEST_PROJECT_PATH: './test/PromptSpec.Tests.csproj'
+
+jobs:
+  # Continuous Integration Job - runs on PRs and pushes
+  ci:
+    name: Build and Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Fetch full history for potential version calculations
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Cache NuGet packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.nuget/packages
+        key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+        restore-keys: |
+          ${{ runner.os }}-nuget-
+
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.SOLUTION_PATH }}
+
+    - name: Build project
+      run: dotnet build ${{ env.SOLUTION_PATH }} --no-restore --configuration Release
+
+    - name: Restore test dependencies
+      run: dotnet restore ${{ env.TEST_PROJECT_PATH }}
+
+    - name: Build tests
+      run: dotnet build ${{ env.TEST_PROJECT_PATH }} --no-restore --configuration Release
+
+    - name: Run tests
+      run: dotnet test ${{ env.TEST_PROJECT_PATH }} --no-build --configuration Release --verbosity normal
+
+    - name: Test pack (verify package can be created)
+      if: matrix.os == 'ubuntu-latest'  # Only run on one OS to avoid duplicates
+      run: |
+        echo "=== Testing NuGet pack process ==="
+        
+        # Clean any existing packages
+        rm -rf ./test-nupkg
+        mkdir -p ./test-nupkg
+        
+        # Create test package
+        dotnet pack ${{ env.PROJECT_PATH }} \
+          --configuration Release \
+          --no-build \
+          --output ./test-nupkg \
+          -p:IsPackable=true \
+          -p:PackageVersion=1.0.0-test
+        
+        # Verify the package was created
+        echo "Contents of ./test-nupkg directory:"
+        ls -la ./test-nupkg/
+        
+        # Check if any .nupkg files exist
+        NUPKG_FILES=$(find ./test-nupkg -name "*.nupkg" -type f | wc -l)
+        echo "Found $NUPKG_FILES .nupkg file(s)"
+        
+        if [ "$NUPKG_FILES" -eq 0 ]; then
+          echo "ERROR: No .nupkg files were created!"
+          exit 1
+        fi
+        
+        echo "=== NuGet test pack successful ==="

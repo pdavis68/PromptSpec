@@ -1,0 +1,296 @@
+name: Publish - Build and Deploy
+
+# Trigger events for the workflow
+on:
+  # CD: Run on version tags
+  push:
+    tags: [ 'v*.*.*' ]
+
+  # Allow manual workflow dispatch for testing
+  workflow_dispatch:
+
+# Grant workflow the minimal permissions needed to create releases and upload release assets.
+# 'contents: write' is required to create releases and upload release assets using GITHUB_TOKEN.
+permissions:
+  contents: write
+  packages: write
+
+env:
+  DOTNET_VERSION: '9.0.x'
+  PROJECT_PATH: './src/PromptSpec.csproj'
+  SOLUTION_PATH: './src/PromptSpec.sln'
+  TEST_PROJECT_PATH: './test/PromptSpec.Tests.csproj'
+
+jobs:
+  # Build and Test Job - runs first to validate the code
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Cache NuGet packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.nuget/packages
+        key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+        restore-keys: |
+          ${{ runner.os }}-nuget-
+
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.SOLUTION_PATH }}
+
+    - name: Build project
+      run: dotnet build ${{ env.SOLUTION_PATH }} --no-restore --configuration Release
+
+    - name: Restore test dependencies
+      run: dotnet restore ${{ env.TEST_PROJECT_PATH }}
+
+    - name: Build tests
+      run: dotnet build ${{ env.TEST_PROJECT_PATH }} --no-restore --configuration Release
+
+    - name: Run tests
+      run: dotnet test ${{ env.TEST_PROJECT_PATH }} --no-build --configuration Release --verbosity normal
+
+  # Package and Publish Job - runs after successful build and test
+  publish:
+    name: Package and Publish
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Extract version from tag
+      id: version
+      run: |
+        if [[ $GITHUB_REF == refs/tags/v* ]]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+          PACKAGE_VERSION=$VERSION
+          # For assembly version, extract only the numeric part (major.minor.patch.revision)
+          ASSEMBLY_VERSION=$(echo $VERSION | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*$/\1.0/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "package_version=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
+          echo "assembly_version=$ASSEMBLY_VERSION" >> $GITHUB_OUTPUT
+          echo "is_release=true" >> $GITHUB_OUTPUT
+          
+          # Check if this is a pre-release (contains alpha, beta, rc, or has a dash)
+          if [[ $VERSION == *"alpha"* ]] || [[ $VERSION == *"beta"* ]] || [[ $VERSION == *"rc"* ]] || [[ $VERSION == *"-"* ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+        else
+          # Fallback for manual dispatch
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          PACKAGE_VERSION="1.0.0-ci.$TIMESTAMP"
+          # Assembly version must be numeric only (major.minor.build.revision)
+          ASSEMBLY_VERSION="1.0.0.$(($(date +%s) % 65535))"
+          echo "version=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
+          echo "package_version=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
+          echo "assembly_version=$ASSEMBLY_VERSION" >> $GITHUB_OUTPUT
+          echo "is_release=false" >> $GITHUB_OUTPUT
+          echo "is_prerelease=false" >> $GITHUB_OUTPUT
+        fi
+        echo "Detected package version: $PACKAGE_VERSION"
+        echo "Detected assembly version: $ASSEMBLY_VERSION"
+
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.SOLUTION_PATH }}
+
+    - name: Build project
+      run: |
+        echo "Building project for packing..."
+        dotnet build ${{ env.PROJECT_PATH }} \
+          --configuration Release \
+          -p:Version=${{ steps.version.outputs.package_version }} \
+          -p:AssemblyVersion=${{ steps.version.outputs.assembly_version }} \
+          -p:FileVersion=${{ steps.version.outputs.assembly_version }}
+
+    - name: Pack NuGet package
+      run: |
+        echo "=== Starting NuGet pack process ==="
+        
+        # Ensure clean output directory
+        rm -rf ./nupkg
+        mkdir -p ./nupkg
+        
+        # Create NuGet package with verbose output
+        echo "Creating NuGet package..."
+        dotnet pack ${{ env.PROJECT_PATH }} \
+          --configuration Release \
+          --no-build \
+          --output ./nupkg \
+          -p:IsPackable=true \
+          -p:IncludeSymbols=true \
+          -p:PackageVersion=${{ steps.version.outputs.package_version }} \
+          -p:Version=${{ steps.version.outputs.package_version }} \
+          -p:AssemblyVersion=${{ steps.version.outputs.assembly_version }} \
+          -p:FileVersion=${{ steps.version.outputs.assembly_version }}
+        
+        # Verify the package was created
+        echo "=== Pack completed, checking results ==="
+        echo "Contents of ./nupkg directory:"
+        ls -la ./nupkg/
+        
+        # Check if any .nupkg files exist with a more reliable test
+        NUPKG_FILES=$(find ./nupkg -name "*.nupkg" -type f | wc -l)
+        echo "Found $NUPKG_FILES .nupkg file(s)"
+        
+        if [ "$NUPKG_FILES" -eq 0 ]; then
+          echo "ERROR: No .nupkg files were created!"
+          echo "Checking project properties..."
+          dotnet msbuild ${{ env.PROJECT_PATH }} -p:Configuration=Release -t:GetTargetPath -v:normal
+          echo "Searching for packages in other locations..."
+          find . -name "*.nupkg" -type f 2>/dev/null || echo "No .nupkg files found anywhere"
+          exit 1
+        fi
+        
+        echo "=== NuGet package creation successful ==="
+
+    - name: Upload NuGet package artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: nuget-package
+        path: ./nupkg/*.nupkg
+
+    # Publish to NuGet.org (runs for version tags)
+    - name: Publish to NuGet
+      if: steps.version.outputs.is_release == 'true'
+      run: |
+        echo "=== Starting NuGet publish process ==="
+        
+        # Double-check the package exists
+        echo "Checking for NuGet packages..."
+        ls -la ./nupkg/
+        
+        # Count the .nupkg files
+        PACKAGE_COUNT=$(find ./nupkg -name "*.nupkg" | wc -l)
+        echo "Found $PACKAGE_COUNT .nupkg file(s)"
+        
+        if [ "$PACKAGE_COUNT" -eq 0 ]; then
+          echo "ERROR: No .nupkg files found!"
+          exit 1
+        fi
+        
+        # Push each package individually with full error reporting
+        for package in ./nupkg/*.nupkg; do
+          if [ -f "$package" ]; then
+            echo "Pushing package: $package"
+            # Run push on a single logical line to avoid shell continuation issues in runners
+            dotnet nuget push "$package" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+            echo "Successfully pushed: $package"
+          fi
+        done
+        
+        echo "=== NuGet publish completed successfully ==="
+      env:
+        NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+
+  # GitHub Release Job - only runs on version tags
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Extract version from tag
+      id: version
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/v}
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        
+        # Check if this is a pre-release
+        if [[ $VERSION == *"alpha"* ]] || [[ $VERSION == *"beta"* ]] || [[ $VERSION == *"rc"* ]] || [[ $VERSION == *"-"* ]]; then
+          echo "is_prerelease=true" >> $GITHUB_OUTPUT
+        else
+          echo "is_prerelease=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Download NuGet package
+      uses: actions/download-artifact@v4
+      with:
+        name: nuget-package
+        path: ./nupkg/
+
+    - name: Prepare release assets
+      run: |
+        mkdir -p ./release-assets
+        
+        # Copy NuGet package to release assets
+        cp ./nupkg/*.nupkg ./release-assets/
+
+    - name: Extract changelog for this version
+      id: changelog
+      run: |
+        if [ -f "CHANGELOG.md" ]; then
+          # Extract the changelog section for this version
+          awk '/^## \['"${{ steps.version.outputs.version }}"'\]/{flag=1; next} /^## \[/{flag=0} flag' CHANGELOG.md > current_changelog.txt
+          
+          # If the changelog is empty, create a default message
+          if [ ! -s current_changelog.txt ]; then
+            echo "Release ${{ steps.version.outputs.version }} of PromptSpec" > current_changelog.txt
+            echo "" >> current_changelog.txt
+            echo "See [CHANGELOG.md](CHANGELOG.md) for full details." >> current_changelog.txt
+          fi
+        else
+          echo "Release ${{ steps.version.outputs.version }} of PromptSpec" > current_changelog.txt
+          echo "" >> current_changelog.txt
+          echo "A C# library for managing prompt templates with YAML-based configuration, parameter validation, and dynamic content replacement for LLM applications." >> current_changelog.txt
+        fi
+        
+        # Set the changelog content as output (handling multiline)
+        {
+          echo 'changelog<<EOF'
+          cat current_changelog.txt
+          echo EOF
+        } >> $GITHUB_OUTPUT
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.version.outputs.version }}
+        name: PromptSpec v${{ steps.version.outputs.version }}
+        body: ${{ steps.changelog.outputs.changelog }}
+        prerelease: ${{ steps.version.outputs.is_prerelease }}
+        files: ./release-assets/*
+        draft: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Cleanup job - removes artifacts
+  cleanup:
+    name: Cleanup Artifacts
+    runs-on: ubuntu-latest
+    needs: [publish, release]
+    if: always()
+    
+    steps:
+    - name: Delete artifacts
+      uses: geekyeggo/delete-artifact@v2
+      with:
+        name: |
+          nuget-package
+        failOnError: false

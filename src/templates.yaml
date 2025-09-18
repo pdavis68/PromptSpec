@@ -1,0 +1,46 @@
+# Example templates.yaml for testing
+prompts:
+  - name: "product_review_summary"
+    version: "1.0"
+    description: "Summarizes a product review for a marketing team."
+    systemMessage: "You are a marketing analyst. Summarize the following product review into a single, concise paragraph, highlighting the main sentiment and key points. Do not mention the customer's name or any personal information."
+    template: "Review ID: {reviewId}\n\nCustomer Name: {customerName}\n\nReview Text:\n{reviewText}\n\n---\n\nSummary:"
+    parameters:
+      temperature: 0.2
+      maxTokens: 150
+    outputFormat: "text"
+    placeholders:
+      reviewId:
+        type: "string"
+        required: true
+      customerName:
+        type: "string"
+        required: false
+      reviewText:
+        type: "string"
+        required: true
+
+  - name: "json_recipe_generator"
+    version: "2.0"
+    description: "Generates a recipe in JSON format."
+    systemMessage: "You are a culinary expert. Generate a detailed recipe in JSON format based on the user's request."
+    template: 'Generate a JSON object for a recipe with the following details: {"name": "{recipeName}", "difficulty": "{difficulty}", "prepTime": "{prepTime}", "ingredients": {ingredients}}'
+    parameters:
+      temperature: 0.8
+    modelConfig:
+      seed: 1234
+      repetitionPenalty: 1.1
+    outputFormat: "json"
+    placeholders:
+      recipeName:
+        type: "string"
+        required: true
+      difficulty:
+        type: "string"
+        required: true
+      prepTime:
+        type: "string"
+        required: false
+      ingredients:
+        type: "string"
+        required: false # This will be a JSON string of ingredients
