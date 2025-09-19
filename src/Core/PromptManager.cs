@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading.Tasks;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 using PromptSpec.Models;
@@ -55,9 +59,27 @@ namespace PromptSpec.Core
                 {
                     var promptCollection = _deserializer.Deserialize<PromptCollection>(yamlContent);
 
-                    if (promptCollection?.Prompts == null)
+                    // If deserialization returns null (e.g., whitespace-only content), throw exception
+                    if (promptCollection == null)
                     {
                         throw new PromptValidationException("Invalid YAML: No 'prompts' section found or it is null.");
+                    }
+
+                    // If prompts section is missing entirely, just clear templates (success case)
+                    // If prompts is explicitly set to null, throw exception
+                    if (promptCollection.Prompts == null)
+                    {
+                        // Check if the YAML explicitly contains "prompts:" (even if null)
+                        // If it does, throw exception. If it doesn't, succeed.
+                        if (yamlContent.Contains("prompts:"))
+                        {
+                            throw new PromptValidationException("Invalid YAML: No 'prompts' section found or it is null.");
+                        }
+                        else
+                        {
+                            _templates.Clear();
+                            return;
+                        }
                     }
 
                     _templates.Clear();
@@ -77,7 +99,7 @@ namespace PromptSpec.Core
             }
             catch (YamlDotNet.Core.YamlException ex)
             {
-                throw new PromptValidationException("Failed to parse YAML content.", ex);
+                throw new PromptValidationException("Failed to parse YAML content.", (Exception)ex);
             }
             catch (Exception ex)
             {
@@ -137,7 +159,11 @@ namespace PromptSpec.Core
         public PromptTemplate GetRequiredPrompt(string promptName)
         {
             var template = GetPrompt(promptName);
-            return template ?? throw new PromptNotFoundException(promptName);
+            if (template == null)
+            {
+                throw new PromptNotFoundException(promptName);
+            }
+            return template;
         }
 
         /// <summary>
