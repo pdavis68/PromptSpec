@@ -1,0 +1,55 @@
+prompts:
+  - name: "greeting"
+    description: "A simple greeting prompt"
+    template: "Hello {name}! Welcome to {platform}."
+    placeholders:
+      name:
+        type: "string"
+        required: true
+      platform:
+        type: "string"
+        required: false
+    parameters:
+      temperature: 0.7
+      maxTokens: 100
+
+  - name: "code-review"
+    description: "Code review assistant"
+    systemMessage: "You are a helpful code review assistant."
+    template: "Please review this {language} code:\n\n{code}\n\nFocus on: {focus_areas}"
+    placeholders:
+      language:
+        type: "string"
+        required: true
+      code:
+        type: "string"
+        required: true
+      focus_areas:
+        type: "string"
+        required: false
+    parameters:
+      temperature: 0.3
+      maxTokens: 500
+      topP: 0.9
+    outputFormat: "markdown"
+
+  - name: "creative-writing"
+    description: "Creative writing assistant"
+    template: "Write a {genre} story about {topic}. The story should be {length} and have a {tone} tone."
+    placeholders:
+      genre:
+        type: "string"
+        required: true
+      topic:
+        type: "string"
+        required: true
+      length:
+        type: "string"
+        required: false
+      tone:
+        type: "string"
+        required: false
+    parameters:
+      temperature: 1.2
+      topP: 0.95
+      maxTokens: 1000
